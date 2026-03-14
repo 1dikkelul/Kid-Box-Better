@@ -60,7 +60,11 @@ static void my_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *p
     if (x2 > (LV_SCREEN_WIDTH - 1)) x2 = LV_SCREEN_WIDTH - 1;
     if (y2 > (LV_SCREEN_HEIGHT - 1)) y2 = LV_SCREEN_HEIGHT - 1;
 
-    // Send RGB565 data directly; avoid in-place byte swapping artifacts.
+    // Panel path expects RGB565 bytes in opposite order compared to LVGL buffer layout.
+    // Swap in place before DMA transfer so LVGL colors match direct display test colors.
+    const uint32_t pixel_count = (uint32_t)(x2 - x1 + 1) * (uint32_t)(y2 - y1 + 1);
+    lv_draw_sw_rgb565_swap(px_map, pixel_count);
+
     esp_lcd_panel_draw_bitmap(panel_handle, x1, y1, x2 + 1, y2 + 1, (void *)px_map);
     if (xSemaphoreTake(flush_done_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
         ESP_LOGW(TAG, "Flush wait timed out (x1=%d y1=%d x2=%d y2=%d)", x1, y1, x2, y2);
