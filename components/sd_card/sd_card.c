@@ -6,12 +6,14 @@
 #include <sdmmc_cmd.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <driver/spi_master.h>
+#include "driver/gpio.h"
 
 #define MOUNT_POINT "/sdcard"
 #define EXAMPLE_MAX_CHAR_SIZE 64
 
 #define SD_SPI_HOST SPI3_HOST // VSPI_HOST for SD card, other SPI used by TFT display
-#define SD_SPI_DMA_CH 2 // DMA channel for SD card SPI
+#define SD_SPI_DMA_CH 2 // Use DMA channel 2, TFT display uses channel 1
 
 static const char *TAG = "sd_card";
 
@@ -50,8 +52,6 @@ esp_err_t sd_card_read_file(const char *path)
 
 esp_err_t sd_card_init_and_demo(void)
 {
-    // Ensure TFT CS is high before SD card access
-    gpio_set_level(15, 1); // TFT CS high (inactive)
     esp_err_t ret;
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
@@ -60,6 +60,7 @@ esp_err_t sd_card_init_and_demo(void)
     };
     sdmmc_card_t *card;
     const char mount_point[] = MOUNT_POINT;
+
     ESP_LOGI(TAG, "Initializing SD card");
     ESP_LOGI(TAG, "Using SPI peripheral");
     // Use SD_SPI_HOST for SD card to avoid conflict with TFT
@@ -90,7 +91,6 @@ esp_err_t sd_card_init_and_demo(void)
     ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount filesystem. SD card may not be present or pins may be incorrect.");
-        spi_bus_free(host.slot);
         return ret;
     }
     ESP_LOGI(TAG, "Filesystem mounted");
@@ -101,7 +101,6 @@ esp_err_t sd_card_init_and_demo(void)
     ret = sd_card_write_file(file_hello, data);
     if (ret != ESP_OK) {
         esp_vfs_fat_sdcard_unmount(mount_point, card);
-        spi_bus_free(host.slot);
         return ret;
     }
     const char *file_foo = MOUNT_POINT"/foo.txt";
@@ -113,13 +112,11 @@ esp_err_t sd_card_init_and_demo(void)
     if (rename(file_hello, file_foo) != 0) {
         ESP_LOGE(TAG, "Rename failed");
         esp_vfs_fat_sdcard_unmount(mount_point, card);
-        spi_bus_free(host.slot);
         return ESP_FAIL;
     }
     ret = sd_card_read_file(file_foo);
     if (ret != ESP_OK) {
         esp_vfs_fat_sdcard_unmount(mount_point, card);
-        spi_bus_free(host.slot);
         return ret;
     }
     const char *file_nihao = MOUNT_POINT"/nihao.txt";
@@ -128,17 +125,15 @@ esp_err_t sd_card_init_and_demo(void)
     ret = sd_card_write_file(file_nihao, data);
     if (ret != ESP_OK) {
         esp_vfs_fat_sdcard_unmount(mount_point, card);
-        spi_bus_free(host.slot);
         return ret;
     }
     ret = sd_card_read_file(file_nihao);
     if (ret != ESP_OK) {
         esp_vfs_fat_sdcard_unmount(mount_point, card);
-        spi_bus_free(host.slot);
         return ret;
     }
     esp_vfs_fat_sdcard_unmount(mount_point, card);
     ESP_LOGI(TAG, "Card unmounted");
-    spi_bus_free(host.slot);
+    // Keep SD SPI bus initialized. On this board, freeing SPI3 can disrupt TFT updates.
     return ESP_OK;
 }

@@ -1,0 +1,22 @@
+# This file integrates the SquareLine-generated code into the ESP-IDF build.
+# It will NOT be overwritten by SquareLine Studio exports.
+
+# Set the path to the generated files.
+# Point SquareLine Studio to export into this 'generated' subdirectory.
+set(SL_SRC_DIR "generated")
+
+# Find all the C source files that SquareLine created.
+file(GLOB_RECURSE COMPONENT_SRCS "${SL_SRC_DIR}/*.c")
+
+# Register the component with the build system.
+idf_component_register(
+    # List the source files to be compiled.
+    SRCS "${COMPONENT_SRCS}"
+
+    # Add the 'generated' directory to the include path.
+    # This allows other components (like 'main') to find "ui.h".
+    INCLUDE_DIRS "${SL_SRC_DIR}"
+
+    # Specify that this component requires the 'lvgl' component.
+    REQUIRES lvgl
+)

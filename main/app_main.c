@@ -5,20 +5,24 @@
 #include "freertos/event_groups.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "wifi_manager.h"
+#include "sd_card.h"
+#include "lvgl.h"
 #include "display.h"
-#include "lvgl_demo.h"
+#include "driver/spi_master.h"
+#include "ui.h"
+#include "lvgl_setup.h"
 
-
-#define TFT_BL 27  // Backlight pin
-#define TFT_WIDTH 240
-#define TFT_HEIGHT 320
-#define TFT_MOSI 13
-#define TFT_SCLK 14
-#define TFT_CS   15
+#define BOOT_PHASE_PAUSE_MS 2000
 
 char ip_str[16];
+extern spi_device_handle_t spi;
+
+
+static void phase_pause(const char* label, uint32_t ms);
+static void phase_pause_with_lvgl(const char *label, uint32_t ms);
 
 static void nvs_init_or_recover(void)
 {
@@ -29,33 +33,58 @@ static void nvs_init_or_recover(void)
     }
 }
 
-
-
 void app_main(void)
 {
     printf("\n\n=== KIDSBOX NEW BUILD %s %s ===\n\n", __DATE__, __TIME__);
     
-    nvs_init_or_recover();
+    nvs_init_or_recover(); // Initialize NVS, erasing if necessary to recover from issues like "no free pages"
 
-;
-
-    wifi_manager_start_sta();
+    wifi_manager_start_sta(); // Start WiFi in station mode
     printf("Finished WiFi Initialization\n");
-    printf("Initiating Display...\n");
+    
+    sd_card_init_and_demo(); // Initialize SD card and run demo operations
+    printf("SD Card Initialized\n");
+
     display_init(); // Initialize the display hardware
     printf("Display Initialized\n");
-    printf("Running WIFI Status\n");
-    wifi_manager_status_t st = wifi_manager_get_status();
+
+    // Simple hardware color sanity check with full-screen updates.
+    display_fill_screen_rgb565(0x001F);
+    phase_pause("Solid BLUE", BOOT_PHASE_PAUSE_MS);
+    display_fill_screen_rgb565(0xF81F);
+    phase_pause("Solid PURPLE", BOOT_PHASE_PAUSE_MS);
+    
+    printf("Running WIFI Status\n");    // Print WiFi status to console
+    wifi_manager_status_t st =wifi_manager_get_status(); // Get WiFi status
     printf("WIFI status: started=%d connected=%d got_ip=%d\n",
         st.started, st.connected, st.got_ip);
-    printf("2 second Delay\n");
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    printf("LVGL Demo Start...\n");
-    lvgl_demo_start();
-    printf("LVGL Finished\n");
-    printf("Initializing SD Card....\n");
-        // Initialize SD card and run demo
-    extern esp_err_t sd_card_init_and_demo(void);
-    sd_card_init_and_demo();
-    printf("SD Card Initialized\n");
+    
+    lvgl_setup_start(); // Initialize LVGL
+    phase_pause_with_lvgl("LVGL Initialized", BOOT_PHASE_PAUSE_MS);
+
+    ui_init(); // Initialize the SquareLine UI
+    phase_pause_with_lvgl("UI Initialized...", BOOT_PHASE_PAUSE_MS); 
+    
+    while (1) {
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static void phase_pause(const char* label, uint32_t ms)
+{
+    printf("[PHASE] %s (%lu ms)\n", label, (unsigned long)ms);
+    vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
+static void phase_pause_with_lvgl(const char *label, uint32_t ms)
+{
+    printf("[PHASE] %s (%lu ms, LVGL active)\n", label, (unsigned long)ms);
+    const uint32_t step_ms = 10;
+    uint32_t elapsed = 0;
+    while (elapsed < ms) {
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(step_ms));
+        elapsed += step_ms;
+    }
 }
