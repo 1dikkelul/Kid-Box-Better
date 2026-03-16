@@ -6,7 +6,12 @@
 set(SL_SRC_DIR "generated")
 
 # Find all the C source files that SquareLine created.
-file(GLOB_RECURSE COMPONENT_SRCS "${SL_SRC_DIR}/*.c")
+if(CMAKE_SCRIPT_MODE_FILE)
+    # ESP-IDF parses component requirements in script mode; CONFIGURE_DEPENDS is not allowed there.
+    set(COMPONENT_SRCS "")
+else()
+    file(GLOB_RECURSE COMPONENT_SRCS CONFIGURE_DEPENDS "${SL_SRC_DIR}/*.c")
+endif()
 
 # Register the component with the build system.
 idf_component_register(

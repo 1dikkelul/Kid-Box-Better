@@ -13,6 +13,7 @@
 #define TFT_DMA_CH 1 // DMA channel for TFT SPI
 
 #define PIN_NUM_MOSI 13
+#define PIN_NUM_MISO 12
 #define PIN_NUM_CLK  14
 #define PIN_NUM_CS   15
 #define PIN_NUM_DC   2
@@ -32,12 +33,19 @@ void display_init(void) {
     gpio_set_level(TFT_BL, 1);
 
     ESP_LOGI(TAG, "Initialize SPI bus");
-    const spi_bus_config_t bus_config = ILI9341_PANEL_BUS_SPI_CONFIG(PIN_NUM_CLK, PIN_NUM_MOSI, LCD_H_RES * 80 * sizeof(uint16_t));
+    const spi_bus_config_t bus_config = {
+        .sclk_io_num = PIN_NUM_CLK,
+        .mosi_io_num = PIN_NUM_MOSI,
+        .miso_io_num = PIN_NUM_MISO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = LCD_H_RES * 80 * sizeof(uint16_t),
+    };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus_config, TFT_DMA_CH));
 
     ESP_LOGI(TAG, "Install panel IO");
     esp_lcd_panel_io_spi_config_t io_config = ILI9341_PANEL_IO_SPI_CONFIG(PIN_NUM_CS, PIN_NUM_DC, NULL, NULL);
-    io_config.pclk_hz = 20 * 1000 * 1000; // Lower to 20MHz to prevent "snow" interference
+    io_config.pclk_hz = 40 * 1000 * 1000; // ILI9341 max; reduce to 20MHz if snow/interference returns
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &panel_io_handle));
 
     ESP_LOGI(TAG, "Install ILI9341 panel driver");
@@ -66,11 +74,14 @@ esp_lcd_panel_io_handle_t display_get_panel_io_handle(void) {
 }
 
 esp_err_t display_reinit_spi_bus(void) {
-    const spi_bus_config_t bus_config = ILI9341_PANEL_BUS_SPI_CONFIG(
-        PIN_NUM_CLK,
-        PIN_NUM_MOSI,
-        LCD_H_RES * 80 * sizeof(uint16_t)
-    );
+    const spi_bus_config_t bus_config = {
+        .sclk_io_num = PIN_NUM_CLK,
+        .mosi_io_num = PIN_NUM_MOSI,
+        .miso_io_num = PIN_NUM_MISO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = LCD_H_RES * 80 * sizeof(uint16_t),
+    };
     return spi_bus_initialize(LCD_HOST, &bus_config, TFT_DMA_CH);
 }
 

@@ -16,6 +16,11 @@
 #include "lvgl_setup.h"
 
 #define BOOT_PHASE_PAUSE_MS 2000
+#define BUTTON_MONITOR_STACK_SIZE 2048
+#define BUTTON_MONITOR_POLL_MS 20
+
+#define BUTTON_1_GPIO GPIO_NUM_21
+#define BUTTON_2_GPIO GPIO_NUM_22
 
 char ip_str[16];
 extern spi_device_handle_t spi;
@@ -23,6 +28,8 @@ extern spi_device_handle_t spi;
 
 static void phase_pause(const char* label, uint32_t ms);
 static void phase_pause_with_lvgl(const char *label, uint32_t ms);
+static void button_monitor_init(void);
+static void button_monitor_task(void *arg);
 
 static void nvs_init_or_recover(void)
 {
@@ -30,6 +37,49 @@ static void nvs_init_or_recover(void)
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
+    }
+}
+
+static void button_monitor_init(void)
+{
+    const gpio_config_t button_config = {
+        .pin_bit_mask = (1ULL << BUTTON_1_GPIO) | (1ULL << BUTTON_2_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&button_config));
+    xTaskCreate(button_monitor_task, "button_monitor", BUTTON_MONITOR_STACK_SIZE, NULL, 5, NULL);
+}
+
+static void button_monitor_task(void *arg)
+{
+    (void)arg;
+
+    const char *tag = "button_monitor";
+    int last_button_1 = gpio_get_level(BUTTON_1_GPIO);
+    int last_button_2 = gpio_get_level(BUTTON_2_GPIO);
+
+    ESP_LOGI(tag, "Monitoring buttons on GPIO%d and GPIO%d", BUTTON_1_GPIO, BUTTON_2_GPIO);
+    ESP_LOGI(tag, "Buttons are active-low with internal pull-ups enabled");
+
+    while (1) {
+        const int button_1_level = gpio_get_level(BUTTON_1_GPIO);
+        const int button_2_level = gpio_get_level(BUTTON_2_GPIO);
+
+        if (button_1_level != last_button_1) {
+            last_button_1 = button_1_level;
+            ESP_LOGI(tag, "GPIO%d button %s", BUTTON_1_GPIO, button_1_level == 0 ? "pressed" : "released");
+        }
+
+        if (button_2_level != last_button_2) {
+            last_button_2 = button_2_level;
+            ESP_LOGI(tag, "GPIO%d button %s", BUTTON_2_GPIO, button_2_level == 0 ? "pressed" : "released");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_MONITOR_POLL_MS));
     }
 }
 
@@ -53,6 +103,8 @@ void app_main(void)
     phase_pause("Solid BLUE", BOOT_PHASE_PAUSE_MS);
     display_fill_screen_rgb565(0xF81F);
     phase_pause("Solid PURPLE", BOOT_PHASE_PAUSE_MS);
+
+    button_monitor_init();
     
     printf("Running WIFI Status\n");    // Print WiFi status to console
     wifi_manager_status_t st =wifi_manager_get_status(); // Get WiFi status

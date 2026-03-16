@@ -1,4 +1,5 @@
 #include "lvgl.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -9,21 +10,67 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_types.h"
 #include "esp_lcd_ili9341.h"
+#include "esp_lcd_touch_xpt2046.h"
 #include "esp_heap_caps.h"
 
 #include "../display/display.h"
 
 #define LVGL_TICK_PERIOD_MS 5
 #define LV_BUF_WIDTH 320
-#define LV_BUF_HEIGHT 40
+#define LV_BUF_HEIGHT 80
 #define LV_SCREEN_WIDTH 320
 #define LV_SCREEN_HEIGHT 240
+
+#define TOUCH_HOST SPI2_HOST
+#define TOUCH_PIN_NUM_CS 33
+#define TOUCH_PIN_NUM_IRQ 36
+
+// These defaults match the current display orientation (swap_xy=false, mirror_x=true, mirror_y=false).
+#define TOUCH_SWAP_XY 0
+#define TOUCH_MIRROR_X 1
+#define TOUCH_MIRROR_Y 0
+
+// Fine calibration offsets (in pixels) applied after mirror/swap transforms.
+// If touches register above a target, increase Y offset. If below, decrease it.
+#define TOUCH_CAL_OFFSET_X 10
+#define TOUCH_CAL_OFFSET_Y -40
 
 static const char *TAG = "lvgl_setup";
 
 // Global panel handle for flush callback
 static esp_lcd_panel_handle_t panel_handle = NULL;
 static SemaphoreHandle_t flush_done_sem = NULL;
+static esp_lcd_touch_handle_t touch_handle = NULL;
+
+static uint16_t clamp_coord_i32(int32_t value, uint16_t min_value, uint16_t max_value)
+{
+    if (value < (int32_t)min_value) {
+        return min_value;
+    }
+    if (value > (int32_t)max_value) {
+        return max_value;
+    }
+    return (uint16_t)value;
+}
+
+static void touch_process_coordinates(esp_lcd_touch_handle_t tp,
+                                      uint16_t *x,
+                                      uint16_t *y,
+                                      uint16_t *strength,
+                                      uint8_t *point_num,
+                                      uint8_t max_point_num)
+{
+    (void)tp;
+    (void)strength;
+
+    uint8_t count = (*point_num < max_point_num) ? *point_num : max_point_num;
+    for (uint8_t i = 0; i < count; i++) {
+        int32_t adj_x = (int32_t)x[i] + TOUCH_CAL_OFFSET_X;
+        int32_t adj_y = (int32_t)y[i] + TOUCH_CAL_OFFSET_Y;
+        x[i] = clamp_coord_i32(adj_x, 0, LV_SCREEN_WIDTH - 1);
+        y[i] = clamp_coord_i32(adj_y, 0, LV_SCREEN_HEIGHT - 1);
+    }
+}
 
 static bool panel_io_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
                                       esp_lcd_panel_io_event_data_t *edata,
@@ -72,6 +119,66 @@ static void my_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *p
     lv_display_flush_ready(display);
 }
 
+static void lvgl_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    esp_lcd_touch_point_data_t points[1] = {0};
+    uint8_t point_cnt = 0;
+
+    esp_lcd_touch_handle_t touch_pad = lv_indev_get_user_data(indev);
+    if (esp_lcd_touch_read_data(touch_pad) != ESP_OK) {
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
+    if (esp_lcd_touch_get_data(touch_pad, points, &point_cnt, 1) == ESP_OK && point_cnt > 0) {
+        data->point.x = points[0].x;
+        data->point.y = points[0].y;
+        data->state = LV_INDEV_STATE_PRESSED;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+}
+
+static esp_err_t lvgl_touch_init(lv_display_t *display)
+{
+    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
+    esp_lcd_panel_io_spi_config_t tp_io_config = ESP_LCD_TOUCH_IO_SPI_XPT2046_CONFIG(TOUCH_PIN_NUM_CS);
+
+    esp_err_t err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)TOUCH_HOST, &tp_io_config, &tp_io_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create touch IO handle: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max = LV_SCREEN_WIDTH,
+        .y_max = LV_SCREEN_HEIGHT,
+        .rst_gpio_num = -1,
+        .int_gpio_num = TOUCH_PIN_NUM_IRQ,
+        .flags = {
+            .swap_xy = TOUCH_SWAP_XY,
+            .mirror_x = TOUCH_MIRROR_X,
+            .mirror_y = TOUCH_MIRROR_Y,
+        },
+        .process_coordinates = touch_process_coordinates,
+    };
+
+    err = esp_lcd_touch_new_spi_xpt2046(tp_io_handle, &tp_cfg, &touch_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize XPT2046 touch: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_display(indev, display);
+    lv_indev_set_user_data(indev, touch_handle);
+    lv_indev_set_read_cb(indev, lvgl_touch_read_cb);
+
+    ESP_LOGI(TAG, "Touch input initialized (CS=%d, IRQ=%d)", TOUCH_PIN_NUM_CS, TOUCH_PIN_NUM_IRQ);
+    return ESP_OK;
+}
+
 void lvgl_setup_start(void) {
     lv_init();
     xTaskCreate(lv_tick_task, "lv_tick_task", 2048, NULL, 1, NULL);
@@ -104,6 +211,10 @@ void lvgl_setup_start(void) {
 
     // LVGL 9: Set as default display
     lv_display_set_default(display);
+
+    if (lvgl_touch_init(display) != ESP_OK) {
+        ESP_LOGW(TAG, "Touch init failed, UI will render but won't receive touch input");
+    }
 
     // Remove any leftover demo/test UI from the screen
     lv_obj_clean(lv_screen_active());
