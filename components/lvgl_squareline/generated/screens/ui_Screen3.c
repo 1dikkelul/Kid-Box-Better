@@ -15,8 +15,14 @@ void ui_Screen3_screen_init(void)
 {
     ui_Screen3 = lv_obj_create(NULL);
     lv_obj_remove_flag(ui_Screen3, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
-    lv_obj_set_style_bg_color(ui_Screen3, lv_color_hex(0xA4D8FF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(ui_Screen3, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_object_set_themeable_style_property(ui_Screen3, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_BG_COLOR,
+                                           _ui_theme_color_Background);
+    ui_object_set_themeable_style_property(ui_Screen3, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_BG_OPA,
+                                           _ui_theme_alpha_Background);
+    ui_object_set_themeable_style_property(ui_Screen3, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_BG_IMAGE_RECOLOR,
+                                           _ui_theme_color_Background);
+    ui_object_set_themeable_style_property(ui_Screen3, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_BG_IMAGE_RECOLOR_OPA,
+                                           _ui_theme_alpha_Background);
     lv_obj_set_style_bg_color(ui_Screen3, lv_color_hex(0xB6E5FF), LV_PART_MAIN | LV_STATE_USER_1);
     lv_obj_set_style_bg_opa(ui_Screen3, 255, LV_PART_MAIN | LV_STATE_USER_1);
 

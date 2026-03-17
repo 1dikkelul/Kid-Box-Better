@@ -6,7 +6,7 @@
 #include "../ui.h"
 
 lv_obj_t * ui_Screen4 = NULL;
-lv_obj_t * ui_TextArea3 = NULL;
+lv_obj_t * ui_TimeLabel = NULL;
 // event funtions
 
 // build funtions
@@ -15,17 +15,19 @@ void ui_Screen4_screen_init(void)
 {
     ui_Screen4 = lv_obj_create(NULL);
     lv_obj_remove_flag(ui_Screen4, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
-    lv_obj_set_style_bg_color(ui_Screen4, lv_color_hex(0xA4D8FF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(ui_Screen4, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_object_set_themeable_style_property(ui_Screen4, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_BG_COLOR,
+                                           _ui_theme_color_Background);
+    ui_object_set_themeable_style_property(ui_Screen4, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_BG_OPA,
+                                           _ui_theme_alpha_Background);
 
-    ui_TextArea3 = lv_textarea_create(ui_Screen4);
-    lv_obj_set_width(ui_TextArea3, 134);
-    lv_obj_set_height(ui_TextArea3, 36);
-    lv_obj_set_x(ui_TextArea3, 1);
-    lv_obj_set_y(ui_TextArea3, 2);
-    lv_obj_set_align(ui_TextArea3, LV_ALIGN_CENTER);
-    lv_textarea_set_text(ui_TextArea3, "CLOCK SCREEN");
-    lv_textarea_set_placeholder_text(ui_TextArea3, "Placeholder...");
+    ui_TimeLabel = lv_label_create(ui_Screen4);
+    lv_obj_set_width(ui_TimeLabel, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_TimeLabel, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_TimeLabel, 2);
+    lv_obj_set_y(ui_TimeLabel, -36);
+    lv_obj_set_align(ui_TimeLabel, LV_ALIGN_CENTER);
+    lv_label_set_text(ui_TimeLabel, "00:00:00");
+    lv_obj_set_style_text_font(ui_TimeLabel, &ui_font_Digital_Numbers, LV_PART_MAIN | LV_STATE_DEFAULT);
 
 }
 
@@ -35,6 +37,6 @@ void ui_Screen4_screen_destroy(void)
 
     // NULL screen variables
     ui_Screen4 = NULL;
-    ui_TextArea3 = NULL;
+    ui_TimeLabel = NULL;
 
 }

@@ -28,12 +28,12 @@
 // These defaults match the current display orientation (swap_xy=false, mirror_x=true, mirror_y=false).
 #define TOUCH_SWAP_XY 0
 #define TOUCH_MIRROR_X 1
-#define TOUCH_MIRROR_Y 0
+#define TOUCH_MIRROR_Y 1
 
 // Fine calibration offsets (in pixels) applied after mirror/swap transforms.
 // If touches register above a target, increase Y offset. If below, decrease it.
-#define TOUCH_CAL_OFFSET_X 10
-#define TOUCH_CAL_OFFSET_Y -40
+#define TOUCH_CAL_OFFSET_X 0
+#define TOUCH_CAL_OFFSET_Y 0
 
 static const char *TAG = "lvgl_setup";
 

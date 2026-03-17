@@ -14,6 +14,8 @@ extern "C" {
 
 #include "ui_helpers.h"
 #include "ui_events.h"
+#include "ui_theme_manager.h"
+#include "ui_themes.h"
 
 
 ///////////////////// SCREENS ////////////////////
@@ -36,6 +38,9 @@ LV_IMG_DECLARE(ui_img_weather_png);    // assets/weather.png
 LV_IMG_DECLARE(ui_img_time_png);    // assets/time.png
 LV_IMG_DECLARE(ui_img_radio_png);    // assets/radio.png
 LV_IMG_DECLARE(ui_img_calender_png);    // assets/calender.png
+
+// FONTS
+LV_FONT_DECLARE(ui_font_Digital_Numbers);
 
 // UI INIT
 void ui_init(void);

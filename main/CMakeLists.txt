@@ -2,7 +2,9 @@ idf_component_register(SRCS "app_main.c"
                     INCLUDE_DIRS "."
                     REQUIRES nvs_flash
                              wifi_manager
+                             time_manager
                              display
                              lvgl_squareline
                              sd_card
-                             lvgl_setup)
+                             lvgl_setup
+                             weather_manager)
