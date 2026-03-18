@@ -3,6 +3,7 @@ idf_component_register(SRCS "app_main.c"
                     REQUIRES nvs_flash
                              wifi_manager
                              time_manager
+                             file_server
                              display
                              lvgl_squareline
                              sd_card

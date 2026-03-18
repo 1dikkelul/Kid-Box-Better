@@ -4,6 +4,7 @@
 #include <esp_log.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <driver/spi_master.h>
@@ -16,13 +17,15 @@
 #define SD_SPI_DMA_CH 2 // Use DMA channel 2, TFT display uses channel 1
 
 static const char *TAG = "sd_card";
+static sdmmc_card_t *s_card = NULL;
+static bool s_mounted = false;
 
 esp_err_t sd_card_write_file(const char *path, char *data)
 {
     ESP_LOGI(TAG, "Opening file %s", path);
     FILE *f = fopen(path, "w");
     if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for writing");
+        ESP_LOGE(TAG, "Failed to open file for writing: %s", strerror(errno));
         return ESP_FAIL;
     }
     fprintf(f, data);
@@ -36,7 +39,7 @@ esp_err_t sd_card_read_file(const char *path)
     ESP_LOGI(TAG, "Reading file %s", path);
     FILE *f = fopen(path, "r");
     if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for reading");
+        ESP_LOGE(TAG, "Failed to open file for reading: %s", strerror(errno));
         return ESP_FAIL;
     }
     char line[EXAMPLE_MAX_CHAR_SIZE];
@@ -50,15 +53,19 @@ esp_err_t sd_card_read_file(const char *path)
     return ESP_OK;
 }
 
-esp_err_t sd_card_init_and_demo(void)
+esp_err_t sd_card_mount(void)
 {
+    if (s_mounted) {
+        ESP_LOGI(TAG, "Filesystem already mounted at %s", MOUNT_POINT);
+        return ESP_OK;
+    }
+
     esp_err_t ret;
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
         .allocation_unit_size = 16 * 1024
     };
-    sdmmc_card_t *card;
     const char mount_point[] = MOUNT_POINT;
 
     ESP_LOGI(TAG, "Initializing SD card");
@@ -88,52 +95,34 @@ esp_err_t sd_card_init_and_demo(void)
     slot_config.gpio_cs = 5; // SD card CS
     slot_config.host_id = SD_SPI_HOST; // Ensure device uses SD_SPI_HOST
     ESP_LOGI(TAG, "Mounting filesystem");
-    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
+    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &s_card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount filesystem. SD card may not be present or pins may be incorrect.");
         return ret;
     }
+    s_mounted = true;
+
     ESP_LOGI(TAG, "Filesystem mounted");
-    sdmmc_card_print_info(stdout, card);
-    const char *file_hello = MOUNT_POINT"/hello.txt";
-    char data[EXAMPLE_MAX_CHAR_SIZE];
-    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s %s!\n", "Hello", card->cid.name);
-    ret = sd_card_write_file(file_hello, data);
-    if (ret != ESP_OK) {
-        esp_vfs_fat_sdcard_unmount(mount_point, card);
-        return ret;
-    }
-    const char *file_foo = MOUNT_POINT"/foo.txt";
-    struct stat st;
-    if (stat(file_foo, &st) == 0) {
-        unlink(file_foo);
-    }
-    ESP_LOGI(TAG, "Renaming file %s to %s", file_hello, file_foo);
-    if (rename(file_hello, file_foo) != 0) {
-        ESP_LOGE(TAG, "Rename failed");
-        esp_vfs_fat_sdcard_unmount(mount_point, card);
-        return ESP_FAIL;
-    }
-    ret = sd_card_read_file(file_foo);
-    if (ret != ESP_OK) {
-        esp_vfs_fat_sdcard_unmount(mount_point, card);
-        return ret;
-    }
-    const char *file_nihao = MOUNT_POINT"/nihao.txt";
-    memset(data, 0, EXAMPLE_MAX_CHAR_SIZE);
-    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s %s!\n", "Nihao", card->cid.name);
-    ret = sd_card_write_file(file_nihao, data);
-    if (ret != ESP_OK) {
-        esp_vfs_fat_sdcard_unmount(mount_point, card);
-        return ret;
-    }
-    ret = sd_card_read_file(file_nihao);
-    if (ret != ESP_OK) {
-        esp_vfs_fat_sdcard_unmount(mount_point, card);
-        return ret;
-    }
-    esp_vfs_fat_sdcard_unmount(mount_point, card);
-    ESP_LOGI(TAG, "Card unmounted");
-    // Keep SD SPI bus initialized. On this board, freeing SPI3 can disrupt TFT updates.
+    sdmmc_card_print_info(stdout, s_card);
     return ESP_OK;
+}
+
+esp_err_t sd_card_unmount(void)
+{
+    const char mount_point[] = MOUNT_POINT;
+
+    if (!s_mounted || !s_card) {
+        return ESP_OK;
+    }
+
+    esp_vfs_fat_sdcard_unmount(mount_point, s_card);
+    s_card = NULL;
+    s_mounted = false;
+    ESP_LOGI(TAG, "Card unmounted");
+    return ESP_OK;
+}
+
+esp_err_t sd_card_init_and_demo(void)
+{
+    return sd_card_mount();
 }

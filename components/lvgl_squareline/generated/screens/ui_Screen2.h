@@ -14,7 +14,8 @@ extern "C" {
 extern void ui_Screen2_screen_init(void);
 extern void ui_Screen2_screen_destroy(void);
 extern lv_obj_t * ui_Screen2;
-extern lv_obj_t * ui_TextArea1;
+extern lv_obj_t * ui_WeatherIcon;
+extern lv_obj_t * ui_TemperatureLabel;
 // CUSTOM VARIABLES
 
 #ifdef __cplusplus

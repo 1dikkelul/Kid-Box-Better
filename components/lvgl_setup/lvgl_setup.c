@@ -17,7 +17,7 @@
 
 #define LVGL_TICK_PERIOD_MS 5
 #define LV_BUF_WIDTH 320
-#define LV_BUF_HEIGHT 80
+#define LV_BUF_HEIGHT 24
 #define LV_SCREEN_WIDTH 320
 #define LV_SCREEN_HEIGHT 240
 

@@ -6,7 +6,8 @@
 #include "../ui.h"
 
 lv_obj_t * ui_Screen2 = NULL;
-lv_obj_t * ui_TextArea1 = NULL;
+lv_obj_t * ui_WeatherIcon = NULL;
+lv_obj_t * ui_TemperatureLabel = NULL;
 // event funtions
 
 // build funtions
@@ -20,14 +21,22 @@ void ui_Screen2_screen_init(void)
     ui_object_set_themeable_style_property(ui_Screen2, LV_PART_MAIN | LV_STATE_DEFAULT, LV_STYLE_BG_OPA,
                                            _ui_theme_alpha_Background);
 
-    ui_TextArea1 = lv_textarea_create(ui_Screen2);
-    lv_obj_set_width(ui_TextArea1, 156);
-    lv_obj_set_height(ui_TextArea1, 34);
-    lv_obj_set_x(ui_TextArea1, -2);
-    lv_obj_set_y(ui_TextArea1, 1);
-    lv_obj_set_align(ui_TextArea1, LV_ALIGN_CENTER);
-    lv_textarea_set_text(ui_TextArea1, "WEATHER SCREEN");
-    lv_textarea_set_placeholder_text(ui_TextArea1, "Placeholder...");
+    ui_WeatherIcon = lv_image_create(ui_Screen2);
+    lv_obj_set_width(ui_WeatherIcon, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_WeatherIcon, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_WeatherIcon, 0);
+    lv_obj_set_y(ui_WeatherIcon, -51);
+    lv_obj_set_align(ui_WeatherIcon, LV_ALIGN_CENTER);
+    lv_obj_add_flag(ui_WeatherIcon, LV_OBJ_FLAG_CLICKABLE);     /// Flags
+    lv_obj_remove_flag(ui_WeatherIcon, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+
+    ui_TemperatureLabel = lv_label_create(ui_Screen2);
+    lv_obj_set_width(ui_TemperatureLabel, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_TemperatureLabel, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_TemperatureLabel, -7);
+    lv_obj_set_y(ui_TemperatureLabel, 23);
+    lv_obj_set_align(ui_TemperatureLabel, LV_ALIGN_CENTER);
+    lv_label_set_text(ui_TemperatureLabel, "00");
 
 }
 
@@ -37,6 +46,7 @@ void ui_Screen2_screen_destroy(void)
 
     // NULL screen variables
     ui_Screen2 = NULL;
-    ui_TextArea1 = NULL;
+    ui_WeatherIcon = NULL;
+    ui_TemperatureLabel = NULL;
 
 }
