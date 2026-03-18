@@ -5,220 +5,115 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_timer.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_vendor.h"
-#include "esp_lcd_types.h"
-#include "esp_lcd_ili9341.h"
-#include "esp_lcd_touch_xpt2046.h"
 #include "esp_heap_caps.h"
+#include <assert.h>
 
 #include "../display/display.h"
+#include "lvgl_setup.h"
 
-#define LVGL_TICK_PERIOD_MS 5
-#define LV_BUF_WIDTH 320
-#define LV_BUF_HEIGHT 24
-#define LV_SCREEN_WIDTH 320
-#define LV_SCREEN_HEIGHT 240
-
-#define TOUCH_HOST SPI2_HOST
-#define TOUCH_PIN_NUM_CS 33
-#define TOUCH_PIN_NUM_IRQ 36
-
-// These defaults match the current display orientation (swap_xy=false, mirror_x=true, mirror_y=false).
-#define TOUCH_SWAP_XY 0
-#define TOUCH_MIRROR_X 1
-#define TOUCH_MIRROR_Y 1
-
-// Fine calibration offsets (in pixels) applied after mirror/swap transforms.
-// If touches register above a target, increase Y offset. If below, decrease it.
-#define TOUCH_CAL_OFFSET_X 0
-#define TOUCH_CAL_OFFSET_Y 0
+#define LVGL_TICK_PERIOD_MS    5
+#define LVGL_TASK_MAX_DELAY_MS 500
+#define LVGL_TASK_MIN_DELAY_MS 10
 
 static const char *TAG = "lvgl_setup";
 
-// Global panel handle for flush callback
-static esp_lcd_panel_handle_t panel_handle = NULL;
-static SemaphoreHandle_t flush_done_sem = NULL;
-static esp_lcd_touch_handle_t touch_handle = NULL;
+// Mutex exposed via lvgl_setup_lock / lvgl_setup_unlock
+static SemaphoreHandle_t s_lvgl_mux = NULL;
 
-static uint16_t clamp_coord_i32(int32_t value, uint16_t min_value, uint16_t max_value)
+// ---- LVGL tick (esp_timer based, avoids dedicated task overhead) ----
+
+static void lvgl_tick_cb(void *arg)
 {
-    if (value < (int32_t)min_value) {
-        return min_value;
-    }
-    if (value > (int32_t)max_value) {
-        return max_value;
-    }
-    return (uint16_t)value;
+    (void)arg;
+    lv_tick_inc(LVGL_TICK_PERIOD_MS);
 }
 
-static void touch_process_coordinates(esp_lcd_touch_handle_t tp,
-                                      uint16_t *x,
-                                      uint16_t *y,
-                                      uint16_t *strength,
-                                      uint8_t *point_num,
-                                      uint8_t max_point_num)
+// ---- Flush callback ----
+// LVGL renders into an RGB565 full-screen buffer.
+// Each pixel is thresholded to black/white and written into the ST7305 frame buffer,
+// then the entire frame buffer is pushed to the panel.
+
+static void my_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    (void)tp;
-    (void)strength;
-
-    uint8_t count = (*point_num < max_point_num) ? *point_num : max_point_num;
-    for (uint8_t i = 0; i < count; i++) {
-        int32_t adj_x = (int32_t)x[i] + TOUCH_CAL_OFFSET_X;
-        int32_t adj_y = (int32_t)y[i] + TOUCH_CAL_OFFSET_Y;
-        x[i] = clamp_coord_i32(adj_x, 0, LV_SCREEN_WIDTH - 1);
-        y[i] = clamp_coord_i32(adj_y, 0, LV_SCREEN_HEIGHT - 1);
+    const uint16_t *buf = (const uint16_t *)px_map;
+    for (int y = area->y1; y <= area->y2; y++) {
+        for (int x = area->x1; x <= area->x2; x++) {
+            // Pixels above mid-gray → white, below → black
+            uint8_t color = (*buf >= 0x7FFFu) ? DISPLAY_COLOR_WHITE : DISPLAY_COLOR_BLACK;
+            display_set_pixel((uint16_t)x, (uint16_t)y, color);
+            buf++;
+        }
     }
+    display_flush();
+    lv_display_flush_ready(disp);
 }
 
-static bool panel_io_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
-                                      esp_lcd_panel_io_event_data_t *edata,
-                                      void *user_ctx)
+// ---- LVGL task ----
+
+static void lvgl_port_task(void *arg)
 {
-    (void)panel_io;
-    (void)edata;
-    (void)user_ctx;
-    BaseType_t high_task_wakeup = pdFALSE;
-    xSemaphoreGiveFromISR(flush_done_sem, &high_task_wakeup);
-    return high_task_wakeup == pdTRUE;
-}
-
-static void lv_tick_task(void *arg) {
-    while (1) {
-        lv_tick_inc(LVGL_TICK_PERIOD_MS);
-        vTaskDelay(pdMS_TO_TICKS(LVGL_TICK_PERIOD_MS));
+    (void)arg;
+    uint32_t delay_ms = LVGL_TASK_MAX_DELAY_MS;
+    for (;;) {
+        if (xSemaphoreTake(s_lvgl_mux, portMAX_DELAY) == pdTRUE) {
+            delay_ms = lv_timer_handler();
+            xSemaphoreGive(s_lvgl_mux);
+        }
+        if (delay_ms > LVGL_TASK_MAX_DELAY_MS) delay_ms = LVGL_TASK_MAX_DELAY_MS;
+        if (delay_ms < LVGL_TASK_MIN_DELAY_MS) delay_ms = LVGL_TASK_MIN_DELAY_MS;
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 
-static void my_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *px_map) {
-    int x1 = area->x1;
-    int y1 = area->y1;
-    int x2 = area->x2;
-    int y2 = area->y2;
+// ---- Public API ----
 
-    // Ignore out-of-range areas and clip partially visible regions.
-    if (x2 < 0 || y2 < 0 || x1 > (LV_SCREEN_WIDTH - 1) || y1 > (LV_SCREEN_HEIGHT - 1)) {
-        lv_display_flush_ready(display);
-        return;
-    }
-    if (x1 < 0) x1 = 0;
-    if (y1 < 0) y1 = 0;
-    if (x2 > (LV_SCREEN_WIDTH - 1)) x2 = LV_SCREEN_WIDTH - 1;
-    if (y2 > (LV_SCREEN_HEIGHT - 1)) y2 = LV_SCREEN_HEIGHT - 1;
-
-    // Panel path expects RGB565 bytes in opposite order compared to LVGL buffer layout.
-    // Swap in place before DMA transfer so LVGL colors match direct display test colors.
-    const uint32_t pixel_count = (uint32_t)(x2 - x1 + 1) * (uint32_t)(y2 - y1 + 1);
-    lv_draw_sw_rgb565_swap(px_map, pixel_count);
-
-    esp_lcd_panel_draw_bitmap(panel_handle, x1, y1, x2 + 1, y2 + 1, (void *)px_map);
-    if (xSemaphoreTake(flush_done_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
-        ESP_LOGW(TAG, "Flush wait timed out (x1=%d y1=%d x2=%d y2=%d)", x1, y1, x2, y2);
-    }
-    lv_display_flush_ready(display);
-}
-
-static void lvgl_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+bool lvgl_setup_lock(int timeout_ms)
 {
-    esp_lcd_touch_point_data_t points[1] = {0};
-    uint8_t point_cnt = 0;
-
-    esp_lcd_touch_handle_t touch_pad = lv_indev_get_user_data(indev);
-    if (esp_lcd_touch_read_data(touch_pad) != ESP_OK) {
-        data->state = LV_INDEV_STATE_RELEASED;
-        return;
-    }
-
-    if (esp_lcd_touch_get_data(touch_pad, points, &point_cnt, 1) == ESP_OK && point_cnt > 0) {
-        data->point.x = points[0].x;
-        data->point.y = points[0].y;
-        data->state = LV_INDEV_STATE_PRESSED;
-    } else {
-        data->state = LV_INDEV_STATE_RELEASED;
-    }
+    const TickType_t ticks = (timeout_ms < 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return xSemaphoreTake(s_lvgl_mux, ticks) == pdTRUE;
 }
 
-static esp_err_t lvgl_touch_init(lv_display_t *display)
+void lvgl_setup_unlock(void)
 {
-    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-    esp_lcd_panel_io_spi_config_t tp_io_config = ESP_LCD_TOUCH_IO_SPI_XPT2046_CONFIG(TOUCH_PIN_NUM_CS);
-
-    esp_err_t err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)TOUCH_HOST, &tp_io_config, &tp_io_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create touch IO handle: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    esp_lcd_touch_config_t tp_cfg = {
-        .x_max = LV_SCREEN_WIDTH,
-        .y_max = LV_SCREEN_HEIGHT,
-        .rst_gpio_num = -1,
-        .int_gpio_num = TOUCH_PIN_NUM_IRQ,
-        .flags = {
-            .swap_xy = TOUCH_SWAP_XY,
-            .mirror_x = TOUCH_MIRROR_X,
-            .mirror_y = TOUCH_MIRROR_Y,
-        },
-        .process_coordinates = touch_process_coordinates,
-    };
-
-    err = esp_lcd_touch_new_spi_xpt2046(tp_io_handle, &tp_cfg, &touch_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize XPT2046 touch: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    lv_indev_t *indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_display(indev, display);
-    lv_indev_set_user_data(indev, touch_handle);
-    lv_indev_set_read_cb(indev, lvgl_touch_read_cb);
-
-    ESP_LOGI(TAG, "Touch input initialized (CS=%d, IRQ=%d)", TOUCH_PIN_NUM_CS, TOUCH_PIN_NUM_IRQ);
-    return ESP_OK;
+    xSemaphoreGive(s_lvgl_mux);
 }
 
-void lvgl_setup_start(void) {
+void lvgl_setup_start(void)
+{
+    s_lvgl_mux = xSemaphoreCreateMutex();
+    assert(s_lvgl_mux);
+
     lv_init();
-    xTaskCreate(lv_tick_task, "lv_tick_task", 2048, NULL, 1, NULL);
 
-    // Get the panel handle from display
-    panel_handle = display_get_panel_handle();
-    esp_lcd_panel_io_handle_t io_handle = display_get_panel_io_handle();
-
-    flush_done_sem = xSemaphoreCreateBinary();
-    if (!flush_done_sem) {
-        ESP_LOGE(TAG, "Failed to create flush semaphore");
-        return;
-    }
-
-    lv_color_t *buf1 = heap_caps_malloc(LV_BUF_WIDTH * LV_BUF_HEIGHT * sizeof(lv_color_t), MALLOC_CAP_DMA);
-    if (!buf1) {
-        ESP_LOGE(TAG, "Failed to allocate LVGL buffer");
-        return;
-    }
-
-    lv_display_t *display = lv_display_create(LV_SCREEN_WIDTH, LV_SCREEN_HEIGHT);
-    lv_display_set_color_format(display, LV_COLOR_FORMAT_RGB565);
-    lv_display_set_buffers(display, buf1, NULL, LV_BUF_WIDTH * LV_BUF_HEIGHT * sizeof(lv_color_t), LV_DISPLAY_RENDER_MODE_PARTIAL);
-    lv_display_set_flush_cb(display, my_flush_cb);
-
-    const esp_lcd_panel_io_callbacks_t cbs = {
-        .on_color_trans_done = panel_io_color_trans_done,
+    // LVGL tick via esp_timer (no extra task needed)
+    esp_timer_create_args_t tick_args = {
+        .callback = lvgl_tick_cb,
+        .name     = "lvgl_tick",
     };
-    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io_handle, &cbs, NULL));
+    esp_timer_handle_t tick_timer = NULL;
+    ESP_ERROR_CHECK(esp_timer_create(&tick_args, &tick_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, LVGL_TICK_PERIOD_MS * 1000));
 
-    // LVGL 9: Set as default display
-    lv_display_set_default(display);
-
-    if (lvgl_touch_init(display) != ESP_OK) {
-        ESP_LOGW(TAG, "Touch init failed, UI will render but won't receive touch input");
+    // Full-screen double buffers in SPIRAM
+    // Each buffer: LCD_H_RES * LCD_V_RES * 2 bytes (RGB565) = 400*300*2 = 240 KB
+    const size_t buf_size = (size_t)LCD_H_RES * LCD_V_RES * sizeof(uint16_t);
+    uint8_t *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    uint8_t *buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    if (!buf1 || !buf2) {
+        ESP_LOGE(TAG, "Failed to allocate LVGL frame buffers in SPIRAM");
+        assert(false);
     }
 
-    // Remove any leftover demo/test UI from the screen
+    lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
+    lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
+    lv_display_set_buffers(disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_FULL);
+    lv_display_set_flush_cb(disp, my_flush_cb);
+    lv_display_set_default(disp);
+
     lv_obj_clean(lv_screen_active());
 
-    ESP_LOGI(TAG, "LVGL display driver and buffers initialized");
-   
+    // LVGL runs in its own task (pinned to core 0, matches Waveshare reference)
+    xTaskCreatePinnedToCore(lvgl_port_task, "lvgl_task", 8 * 1024, NULL, 5, NULL, 0);
+
+    ESP_LOGI(TAG, "LVGL ready: %dx%d RGB565→monochrome, full-screen SPIRAM buffers", LCD_H_RES, LCD_V_RES);
 }

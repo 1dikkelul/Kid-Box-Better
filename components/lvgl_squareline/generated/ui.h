@@ -10,21 +10,24 @@
 extern "C" {
 #endif
 
+#if defined __has_include
+#if __has_include("lvgl.h")
 #include "lvgl.h"
+#elif __has_include("lvgl/lvgl.h")
+#include "lvgl/lvgl.h"
+#else
+#include "lvgl.h"
+#endif
+#else
+#include "lvgl.h"
+#endif
 
 #include "ui_helpers.h"
 #include "ui_events.h"
-#include "ui_theme_manager.h"
-#include "ui_themes.h"
-
 
 ///////////////////// SCREENS ////////////////////
 
-#include "screens/ui_Screen1.h"
-#include "screens/ui_Screen2.h"
-#include "screens/ui_Screen3.h"
-#include "screens/ui_Screen4.h"
-#include "screens/ui_Screen5.h"
+#include "ui_Screen1.h"
 
 ///////////////////// VARIABLES ////////////////////
 
@@ -32,15 +35,6 @@ extern "C" {
 // EVENTS
 
 extern lv_obj_t * ui____initial_actions0;
-
-// IMAGES AND IMAGE SETS
-LV_IMG_DECLARE(ui_img_weather_png);    // assets/weather.png
-LV_IMG_DECLARE(ui_img_time_png);    // assets/time.png
-LV_IMG_DECLARE(ui_img_radio_png);    // assets/radio.png
-LV_IMG_DECLARE(ui_img_calender_png);    // assets/calender.png
-
-// FONTS
-LV_FONT_DECLARE(ui_font_Digital_Numbers);
 
 // UI INIT
 void ui_init(void);

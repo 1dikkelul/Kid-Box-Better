@@ -1,143 +1,283 @@
 
+#include "display.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
 #include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_vendor.h"
-#include "esp_lcd_types.h"
-#include "esp_lcd_ili9341.h"
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <assert.h>
+#include <string.h>
 
-#define LCD_HOST    SPI2_HOST  //SPI Bus for TFT display
-#define TFT_DMA_CH 1 // DMA channel for TFT SPI
+// ---- Pins (ESP32-S3-RLCD-4.2 board) ----
+#define LCD_HOST       SPI3_HOST
+#define RLCD_MOSI_PIN  12
+#define RLCD_SCK_PIN   11
+#define RLCD_DC_PIN    5
+#define RLCD_CS_PIN    40
+#define RLCD_RST_PIN   41
 
-#define PIN_NUM_MOSI 13
-#define PIN_NUM_MISO 12
-#define PIN_NUM_CLK  14
-#define PIN_NUM_CS   15
-#define PIN_NUM_DC   2
-#define PIN_NUM_RST  -1
-#define LCD_H_RES    320
-#define LCD_V_RES    240
-#define TFT_BL 27  // Backlight pin
+// ---- Frame buffer ----
+// ST7305 is 1-bit monochrome. Each byte packs 8 sub-pixels in a 4x2 block.
+// Buffer size = (400/4) * (300/2) = 100 * 150 = 15,000 bytes.
+#define DISP_BUF_LEN   ((LCD_H_RES / 4) * (LCD_V_RES / 2))
 
 static const char *TAG = "display";
 
-esp_lcd_panel_handle_t panel_handle = NULL;
-static esp_lcd_panel_io_handle_t panel_io_handle = NULL;
+static esp_lcd_panel_io_handle_t s_panel_io = NULL;
 
-void display_init(void) {
-    // Turn on backlight
-    gpio_set_direction(TFT_BL, GPIO_MODE_OUTPUT);
-    gpio_set_level(TFT_BL, 1);
+// Frame buffer lives in SPIRAM
+static uint8_t *s_disp_buf = NULL;
 
-    ESP_LOGI(TAG, "Initialize SPI bus");
-    const spi_bus_config_t bus_config = {
-        .sclk_io_num = PIN_NUM_CLK,
-        .mosi_io_num = PIN_NUM_MOSI,
-        .miso_io_num = PIN_NUM_MISO,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_H_RES * 80 * sizeof(uint16_t),
+// LUT for fast pixel address lookup (also in SPIRAM)
+// Indexed as [x * LCD_V_RES + y]
+static uint16_t *s_pixel_index_lut = NULL;  // 400*300*2 = 240 KB
+static uint8_t  *s_pixel_bit_lut   = NULL;  // 400*300*1 = 120 KB
+
+// ---- Low-level SPI helpers ----
+
+static void rlcd_send_cmd(uint8_t cmd)
+{
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(s_panel_io, cmd, NULL, 0));
+}
+
+static void rlcd_send_data(uint8_t data)
+{
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(s_panel_io, -1, &data, 1));
+}
+
+static void rlcd_send_buf(uint8_t *data, int len)
+{
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(s_panel_io, -1, data, len));
+}
+
+// ---- Hardware reset ----
+
+static void rlcd_reset(void)
+{
+    gpio_set_level(RLCD_RST_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    gpio_set_level(RLCD_RST_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_level(RLCD_RST_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+}
+
+// ---- LUT init (landscape orientation used by this panel init) ----
+// Pixel packing for this display (landscape, 400 wide x 300 tall):
+// Each byte holds a 2x4 block with Y mirrored in hardware scan order.
+// byte_x  = x / 2
+// block_y = (LCD_V_RES - 1 - y) / 4
+// index   = byte_x * (LCD_V_RES/4) + block_y
+// bit     = 7 - (((LCD_V_RES - 1 - y) % 4) * 2 + (x % 2))
+
+static void init_pixel_lut(void)
+{
+    const uint16_t H4 = LCD_V_RES / 4; // = 75
+    for (uint16_t x = 0; x < LCD_H_RES; x++) {
+        uint16_t byte_x  = x >> 1;
+        uint8_t  local_x = x & 0x01;
+        for (uint16_t y = 0; y < LCD_V_RES; y++) {
+            uint16_t inv_y   = (uint16_t)(LCD_V_RES - 1u - y);
+            uint16_t block_y = inv_y >> 2;
+            uint8_t  local_y = inv_y & 0x03;
+            uint32_t index   = (uint32_t)byte_x * H4 + block_y;
+            uint8_t  bit     = 7u - ((local_y << 1) | local_x);
+            s_pixel_index_lut[(uint32_t)x * LCD_V_RES + y] = (uint16_t)index;
+            s_pixel_bit_lut  [(uint32_t)x * LCD_V_RES + y] = (uint8_t)(1u << bit);
+        }
+    }
+}
+
+// ---- ST7305 init sequence (from Waveshare reference, landscape mode) ----
+
+static void rlcd_panel_init(void)
+{
+    rlcd_reset();
+
+    rlcd_send_cmd(0xD6);
+    rlcd_send_data(0x17);
+    rlcd_send_data(0x02);
+
+    rlcd_send_cmd(0xD1);
+    rlcd_send_data(0x01);
+
+    rlcd_send_cmd(0xC0);
+    rlcd_send_data(0x11);
+    rlcd_send_data(0x04);
+
+    rlcd_send_cmd(0xC1);
+    rlcd_send_data(0x69); rlcd_send_data(0x69);
+    rlcd_send_data(0x69); rlcd_send_data(0x69);
+
+    rlcd_send_cmd(0xC2);
+    rlcd_send_data(0x19); rlcd_send_data(0x19);
+    rlcd_send_data(0x19); rlcd_send_data(0x19);
+
+    rlcd_send_cmd(0xC4);
+    rlcd_send_data(0x4B); rlcd_send_data(0x4B);
+    rlcd_send_data(0x4B); rlcd_send_data(0x4B);
+
+    rlcd_send_cmd(0xC5);
+    rlcd_send_data(0x19); rlcd_send_data(0x19);
+    rlcd_send_data(0x19); rlcd_send_data(0x19);
+
+    rlcd_send_cmd(0xD8);
+    rlcd_send_data(0x80);
+    rlcd_send_data(0xE9);
+
+    rlcd_send_cmd(0xB2);
+    rlcd_send_data(0x02);
+
+    rlcd_send_cmd(0xB3);
+    rlcd_send_data(0xE5); rlcd_send_data(0xF6); rlcd_send_data(0x05);
+    rlcd_send_data(0x46); rlcd_send_data(0x77); rlcd_send_data(0x77);
+    rlcd_send_data(0x77); rlcd_send_data(0x77); rlcd_send_data(0x76);
+    rlcd_send_data(0x45);
+
+    rlcd_send_cmd(0xB4);
+    rlcd_send_data(0x05); rlcd_send_data(0x46); rlcd_send_data(0x77);
+    rlcd_send_data(0x77); rlcd_send_data(0x77); rlcd_send_data(0x77);
+    rlcd_send_data(0x76); rlcd_send_data(0x45);
+
+    rlcd_send_cmd(0x62);
+    rlcd_send_data(0x32); rlcd_send_data(0x03); rlcd_send_data(0x1F);
+
+    rlcd_send_cmd(0xB7);
+    rlcd_send_data(0x13);
+
+    rlcd_send_cmd(0xB0);
+    rlcd_send_data(0x64);
+
+    rlcd_send_cmd(0x11);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    rlcd_send_cmd(0xC9);
+    rlcd_send_data(0x00);
+
+    rlcd_send_cmd(0x36);
+    rlcd_send_data(0x48);   // landscape orientation, no mirror/flip
+
+    rlcd_send_cmd(0x3A);
+    rlcd_send_data(0x11);
+
+    rlcd_send_cmd(0xB9);
+    rlcd_send_data(0x20);
+
+    rlcd_send_cmd(0xB8);
+    rlcd_send_data(0x29);
+
+    rlcd_send_cmd(0x21);    // display inversion on (needed for this physical panel)
+
+    rlcd_send_cmd(0x2A);    // column address: 0x12..0x2A = cols 18..42 (25 x 16px = 400)
+    rlcd_send_data(0x12);
+    rlcd_send_data(0x2A);
+
+    rlcd_send_cmd(0x2B);    // page address: 0x00..0xC7 = rows 0..199 (200 x 2-row = 300?)
+    rlcd_send_data(0x00);
+    rlcd_send_data(0xC7);
+
+    rlcd_send_cmd(0x35);
+    rlcd_send_data(0x00);
+
+    rlcd_send_cmd(0xD0);
+    rlcd_send_data(0xFF);
+
+    rlcd_send_cmd(0x38);
+    rlcd_send_cmd(0x29);    // display on
+}
+
+// ---- Public API ----
+
+void display_init(void)
+{
+    ESP_LOGI(TAG, "Initialising ST7305 RLCD 400x300");
+
+    // Configure RST GPIO
+    const gpio_config_t rst_cfg = {
+        .pin_bit_mask  = (1ULL << RLCD_RST_PIN),
+        .mode          = GPIO_MODE_OUTPUT,
+        .pull_up_en    = GPIO_PULLUP_ENABLE,
+        .pull_down_en  = GPIO_PULLDOWN_DISABLE,
+        .intr_type     = GPIO_INTR_DISABLE,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus_config, TFT_DMA_CH));
+    ESP_ERROR_CHECK(gpio_config(&rst_cfg));
+    gpio_set_level(RLCD_RST_PIN, 1);
 
-    ESP_LOGI(TAG, "Install panel IO");
-    esp_lcd_panel_io_spi_config_t io_config = ILI9341_PANEL_IO_SPI_CONFIG(PIN_NUM_CS, PIN_NUM_DC, NULL, NULL);
-    io_config.pclk_hz = 40 * 1000 * 1000; // ILI9341 max; reduce to 20MHz if snow/interference returns
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &panel_io_handle));
+    // Allocate SPIRAM buffers
+    s_disp_buf = heap_caps_malloc(DISP_BUF_LEN, MALLOC_CAP_SPIRAM);
+    assert(s_disp_buf && "SPIRAM frame buffer alloc failed");
 
-    ESP_LOGI(TAG, "Install ILI9341 panel driver");
-    const esp_lcd_panel_dev_config_t panel_config = {
-        .reset_gpio_num = PIN_NUM_RST,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
-        .data_endian = LCD_RGB_DATA_ENDIAN_LITTLE,
-        .bits_per_pixel = 16,
+    s_pixel_index_lut = heap_caps_malloc((uint32_t)LCD_H_RES * LCD_V_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    s_pixel_bit_lut   = heap_caps_malloc((uint32_t)LCD_H_RES * LCD_V_RES * sizeof(uint8_t),  MALLOC_CAP_SPIRAM);
+    assert(s_pixel_index_lut && s_pixel_bit_lut && "SPIRAM pixel LUT alloc failed");
+    init_pixel_lut();
+    ESP_LOGI(TAG, "Pixel LUT initialised");
+
+    // Init SPI bus (SPI3_HOST, no MISO needed)
+    const spi_bus_config_t bus_cfg = {
+        .mosi_io_num     = RLCD_MOSI_PIN,
+        .miso_io_num     = -1,
+        .sclk_io_num     = RLCD_SCK_PIN,
+        .quadwp_io_num   = -1,
+        .quadhd_io_num   = -1,
+        .max_transfer_sz = DISP_BUF_LEN,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io_handle, &panel_config, &panel_handle));
-    ESP_LOGI(TAG, "panel_handle address: %p", panel_handle);
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-    // DONT TOUCH: this panel requires swap_xy=false; swap_xy=true causes a fixed right-side strip.
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
-}
+    ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
 
-esp_lcd_panel_handle_t display_get_panel_handle(void) {
-    return panel_handle;
-}
-
-esp_lcd_panel_io_handle_t display_get_panel_io_handle(void) {
-    return panel_io_handle;
-}
-
-esp_err_t display_reinit_spi_bus(void) {
-    const spi_bus_config_t bus_config = {
-        .sclk_io_num = PIN_NUM_CLK,
-        .mosi_io_num = PIN_NUM_MOSI,
-        .miso_io_num = PIN_NUM_MISO,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_H_RES * 80 * sizeof(uint16_t),
+    // Init panel IO
+    const esp_lcd_panel_io_spi_config_t io_cfg = {
+        .dc_gpio_num        = RLCD_DC_PIN,
+        .cs_gpio_num        = RLCD_CS_PIN,
+        .pclk_hz            = 10 * 1000 * 1000,
+        .lcd_cmd_bits       = 8,
+        .lcd_param_bits     = 8,
+        .spi_mode           = 0,
+        .trans_queue_depth  = 10,
     };
-    return spi_bus_initialize(LCD_HOST, &bus_config, TFT_DMA_CH);
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &s_panel_io));
+
+    // Run ST7305 init sequence
+    rlcd_panel_init();
+
+    // Start with a white screen
+    display_fill_screen(DISPLAY_COLOR_WHITE);
+
+    ESP_LOGI(TAG, "ST7305 display ready");
 }
 
-void display_set_orientation(bool swap_xy, bool mirror_x, bool mirror_y) {
-    if (!panel_handle) {
-        ESP_LOGE(TAG, "Panel handle is NULL in display_set_orientation");
-        return;
-    }
-
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, swap_xy));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, mirror_x, mirror_y));
-    ESP_LOGI(TAG, "Orientation set: swap_xy=%d mirror_x=%d mirror_y=%d",
-             swap_xy, mirror_x, mirror_y);
+void display_set_pixel(uint16_t x, uint16_t y, uint8_t color)
+{
+    uint32_t lut_idx = (uint32_t)x * LCD_V_RES + y;
+    uint32_t buf_idx = s_pixel_index_lut[lut_idx];
+    uint8_t  mask    = s_pixel_bit_lut[lut_idx];
+    if (color)
+        s_disp_buf[buf_idx] |=  mask;
+    else
+        s_disp_buf[buf_idx] &= ~mask;
 }
 
-void display_fill_screen_rgb565(uint16_t color) {
-    if (!panel_handle) {
-        ESP_LOGE(TAG, "Panel handle is NULL in display_fill_screen_rgb565");
-        return;
-    }
-
-    uint16_t *line_buf = heap_caps_malloc(LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!line_buf) {
-        ESP_LOGE(TAG, "Failed to allocate line buffer for full-screen fill");
-        return;
-    }
-
-    // ILI9341 SPI write path expects RGB565 bytes MSB first.
-    const uint16_t tx_color = (uint16_t)((color << 8) | (color >> 8));
-
-    for (int x = 0; x < LCD_H_RES; x++) {
-        line_buf[x] = tx_color;
-    }
-
-    for (int y = 0; y < LCD_V_RES; y++) {
-        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel_handle, 0, y, LCD_H_RES, y + 1, line_buf));
-    }
-
-    free(line_buf);
+void display_flush(void)
+{
+    rlcd_send_cmd(0x2A);
+    rlcd_send_data(0x12);
+    rlcd_send_data(0x2A);
+    rlcd_send_cmd(0x2B);
+    rlcd_send_data(0x00);
+    rlcd_send_data(0xC7);
+    rlcd_send_cmd(0x2C);
+    rlcd_send_buf(s_disp_buf, DISP_BUF_LEN);
 }
 
-void display_test(void) {
-    ESP_LOGI(TAG, "panel_handle in test: %p", panel_handle);
-    ESP_LOGI(TAG, "Free heap before allocation: %u", esp_get_free_heap_size());
-    // Draw a small white rectangle at top left
-    int rect_w = 80, rect_h = 40;
-    uint16_t *rect = calloc(rect_w * rect_h, sizeof(uint16_t));
-    if (rect) {
-        for (int i = 0; i < rect_w * rect_h; ++i) rect[i] = 0xFFFF; // White in RGB565
-        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, rect_w, rect_h, rect));
-        ESP_LOGI(TAG, "Rectangle draw command sent");
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Wait 1 second to ensure display update
-        free(rect);
-        ESP_LOGI(TAG, "Test rectangle drawn");
-    } else {
-        ESP_LOGE(TAG, "Failed to allocate small rectangle framebuffer");
-    }
-    ESP_LOGI(TAG, "Free heap after allocation: %u", esp_get_free_heap_size());
+void display_fill_screen(uint8_t color)
+{
+    memset(s_disp_buf, color, DISP_BUF_LEN);
+    display_flush();
+}
+
+void display_fill_screen_rgb565(uint16_t color)
+{
+    // Map RGB565 to monochrome: pixels above mid-gray → white, below → black
+    display_fill_screen((color >= 0x7FFFu) ? DISPLAY_COLOR_WHITE : DISPLAY_COLOR_BLACK);
 }

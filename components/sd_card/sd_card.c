@@ -4,17 +4,18 @@
 #include <esp_log.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
+#include <driver/sdmmc_host.h>
 #include <errno.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <driver/spi_master.h>
-#include "driver/gpio.h"
+#include <string.h>
+
+// SD card uses the SDMMC peripheral in 1-bit mode.
+// GPIO assignments for the ESP32-S3-RLCD-4.2 board:
+#define SD_CLK_PIN  38
+#define SD_CMD_PIN  21
+#define SD_D0_PIN   39
 
 #define MOUNT_POINT "/sdcard"
 #define EXAMPLE_MAX_CHAR_SIZE 64
-
-#define SD_SPI_HOST SPI3_HOST // VSPI_HOST for SD card, other SPI used by TFT display
-#define SD_SPI_DMA_CH 2 // Use DMA channel 2, TFT display uses channel 1
 
 static const char *TAG = "sd_card";
 static sdmmc_card_t *s_card = NULL;
@@ -60,49 +61,35 @@ esp_err_t sd_card_mount(void)
         return ESP_OK;
     }
 
-    esp_err_t ret;
+    ESP_LOGI(TAG, "Initializing SD card (SDMMC 1-bit, CLK=%d CMD=%d D0=%d)",
+             SD_CLK_PIN, SD_CMD_PIN, SD_D0_PIN);
+
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
-        .allocation_unit_size = 16 * 1024
+        .allocation_unit_size = 16 * 1024,
     };
-    const char mount_point[] = MOUNT_POINT;
 
-    ESP_LOGI(TAG, "Initializing SD card");
-    ESP_LOGI(TAG, "Using SPI peripheral");
-    // Use SD_SPI_HOST for SD card to avoid conflict with TFT
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SD_SPI_HOST;
-    // Use dedicated SD Card SPI bus: MOSI=23, MISO=19, CLK=18, CS=5
-    spi_bus_config_t bus_cfg = {
-        .mosi_io_num = 23,
-        .miso_io_num = 19,
-        .sclk_io_num = 18,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = 4000,
-    };
-    // Only initialize SPI bus if not already initialized
-    ret = spi_bus_initialize(host.slot, &bus_cfg, SD_SPI_DMA_CH);
-    if (ret == ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "SPI bus already initialized, skipping initialization.");
-        ret = ESP_OK;
-    } else if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize bus.");
-        return ret;
-    }
-    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = 5; // SD card CS
-    slot_config.host_id = SD_SPI_HOST; // Ensure device uses SD_SPI_HOST
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 1;
+    slot_config.clk   = SD_CLK_PIN;
+    slot_config.cmd   = SD_CMD_PIN;
+    slot_config.d0    = SD_D0_PIN;
+    // Enable internal pull-ups (the board may have external ones too)
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
     ESP_LOGI(TAG, "Mounting filesystem");
-    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &s_card);
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &s_card);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to mount filesystem. SD card may not be present or pins may be incorrect.");
+        ESP_LOGE(TAG, "Failed to mount filesystem (%s). SD card may not be present.",
+                 esp_err_to_name(ret));
         return ret;
     }
-    s_mounted = true;
 
-    ESP_LOGI(TAG, "Filesystem mounted");
+    s_mounted = true;
+    ESP_LOGI(TAG, "Filesystem mounted at %s", MOUNT_POINT);
     sdmmc_card_print_info(stdout, s_card);
     return ESP_OK;
 }
