@@ -14,8 +14,29 @@ extern "C" {
 extern void ui_Screen1_screen_init(void);
 extern void ui_Screen1_screen_destroy(void);
 extern lv_obj_t * ui_Screen1;
-extern lv_obj_t * ui_TextArea1;
+extern lv_obj_t * ui_TodayDay;
 extern lv_obj_t * ui_WeatherIconNow;
+extern lv_obj_t * ui_Image2;
+extern lv_obj_t * ui_TempSensor;
+extern lv_obj_t * ui_HumiditySensor;
+extern lv_obj_t * ui_Weather7am;
+extern lv_obj_t * ui_Weather10am;
+extern lv_obj_t * ui_Weather1pm;
+extern lv_obj_t * ui_Weather4pm;
+extern lv_obj_t * ui_Weather7pm;
+extern lv_obj_t * ui_Temp7am;
+extern lv_obj_t * ui_Temp10am;
+extern lv_obj_t * ui_Temp1pm;
+extern lv_obj_t * ui_Temp4pm;
+extern lv_obj_t * ui_Temp7pm;
+extern lv_obj_t * ui_Image11;
+extern lv_obj_t * ui_Image12;
+extern lv_obj_t * ui_WindNow;
+extern lv_obj_t * ui_TextArea13;
+extern lv_obj_t * ui_TextArea14;
+extern lv_obj_t * ui_TextArea15;
+extern lv_obj_t * ui_TextArea16;
+extern lv_obj_t * ui_TextArea17;
 // CUSTOM VARIABLES
 
 #ifdef __cplusplus

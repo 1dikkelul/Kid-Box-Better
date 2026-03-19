@@ -38,6 +38,11 @@ extern lv_obj_t * ui____initial_actions0;
 
 // IMAGES AND IMAGE SETS
 LV_IMG_DECLARE(ui_img_180658864);    // assets/wi-day-thunderstorm_144.png
+LV_IMG_DECLARE(ui_img_1124591202);    // assets/wi-thermometer_65.png
+LV_IMG_DECLARE(ui_img_592473140);    // assets/wi-cloudy_65.png
+LV_IMG_DECLARE(ui_img_1598907054);    // assets/wi-day-thunderstorm_65.png
+LV_IMG_DECLARE(ui_img_665999734);    // assets/wi-humidity_44.png
+LV_IMG_DECLARE(ui_img_1124209203);    // assets/wi-strong-wind_44.png
 
 // UI INIT
 void ui_init(void);
