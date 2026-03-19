@@ -4,6 +4,7 @@ idf_component_register(SRCS "app_main.c"
                              wifi_manager
                              time_manager
                              file_server
+                             boot_video
                              display
                              lvgl_squareline
                              sd_card

@@ -22,6 +22,7 @@
 // ST7305 is 1-bit monochrome. Each byte packs 8 sub-pixels in a 4x2 block.
 // Buffer size = (400/4) * (300/2) = 100 * 150 = 15,000 bytes.
 #define DISP_BUF_LEN   ((LCD_H_RES / 4) * (LCD_V_RES / 2))
+#define INPUT_MONO_FRAME_LEN ((LCD_H_RES * LCD_V_RES) / 8)
 
 static const char *TAG = "display";
 
@@ -280,4 +281,93 @@ void display_fill_screen_rgb565(uint16_t color)
 {
     // Map RGB565 to monochrome: pixels above mid-gray → white, below → black
     display_fill_screen((color >= 0x7FFFu) ? DISPLAY_COLOR_WHITE : DISPLAY_COLOR_BLACK);
+}
+
+void display_draw_frame_mono_1bpp(const uint8_t *frame, size_t frame_len)
+{
+    if (!frame || frame_len != INPUT_MONO_FRAME_LEN) {
+        ESP_LOGW(TAG, "Invalid mono frame input (ptr=%p, len=%u)",
+                 frame, (unsigned)frame_len);
+        return;
+    }
+
+    memset(s_disp_buf, 0x00, DISP_BUF_LEN);
+
+    for (uint16_t y = 0; y < LCD_V_RES; y++) {
+        const size_t row_base = (size_t)y * (LCD_H_RES / 8);
+        for (uint16_t x = 0; x < LCD_H_RES; x++) {
+            const size_t byte_idx = row_base + (x >> 3);
+            const uint8_t bit_mask = (uint8_t)(0x80u >> (x & 0x07u));
+            const uint8_t is_white = (frame[byte_idx] & bit_mask) ? 1u : 0u;
+            display_set_pixel(x, y, is_white ? DISPLAY_COLOR_WHITE : DISPLAY_COLOR_BLACK);
+        }
+    }
+
+    display_flush();
+}
+
+void display_draw_frame_native_1bpp(const uint8_t *frame, size_t frame_len)
+{
+    if (!frame || frame_len != DISP_BUF_LEN) {
+        ESP_LOGW(TAG, "Invalid native mono frame input (ptr=%p, len=%u)",
+                 frame, (unsigned)frame_len);
+        return;
+    }
+
+    memcpy(s_disp_buf, frame, DISP_BUF_LEN);
+    display_flush();
+}
+
+void display_show_frame(const uint8_t *rgb565_frame, uint16_t width, uint16_t height)
+{
+    if (!rgb565_frame || width != LCD_H_RES || height != LCD_V_RES) {
+        ESP_LOGW(TAG, "Invalid RGB565 frame (ptr=%p, %ux%u)", rgb565_frame, width, height);
+        return;
+    }
+
+    memset(s_disp_buf, 0x00, DISP_BUF_LEN);
+
+    // Fast path for boot video: pack monochrome bits directly into panel buffer.
+    const uint16_t h4 = LCD_V_RES / 4;  // 75 for 300px panel height
+    for (uint16_t y = 0; y < height; y++) {
+        const uint16_t inv_y = (uint16_t)(LCD_V_RES - 1u - y);
+        const uint16_t block_y = inv_y >> 2;
+        const uint8_t local_y = (uint8_t)(inv_y & 0x03u);
+        const uint8_t bit_even = (uint8_t)(1u << (7u - (local_y << 1)));
+        const uint8_t bit_odd = (uint8_t)(bit_even >> 1);
+
+        size_t pixel_offset = (size_t)y * width * 2;
+        for (uint16_t x = 0; x < width; x += 2) {
+            const uint32_t buf_idx = (uint32_t)(x >> 1) * h4 + block_y;
+
+            // Pixel 0 (x even)
+            const uint16_t rgb0 = (uint16_t)rgb565_frame[pixel_offset] |
+                                  ((uint16_t)rgb565_frame[pixel_offset + 1] << 8);
+            pixel_offset += 2;
+
+            // Brightness in RGB565 domain, range 0..156.
+            const uint16_t lum0 =
+                (uint16_t)(((rgb0 >> 11) & 0x1Fu) << 1) +
+                (uint16_t)((rgb0 >> 5) & 0x3Fu) +
+                (uint16_t)(rgb0 & 0x1Fu);
+            if (lum0 >= 78u) {
+                s_disp_buf[buf_idx] |= bit_even;
+            }
+
+            // Pixel 1 (x odd)
+            const uint16_t rgb1 = (uint16_t)rgb565_frame[pixel_offset] |
+                                  ((uint16_t)rgb565_frame[pixel_offset + 1] << 8);
+            pixel_offset += 2;
+
+            const uint16_t lum1 =
+                (uint16_t)(((rgb1 >> 11) & 0x1Fu) << 1) +
+                (uint16_t)((rgb1 >> 5) & 0x3Fu) +
+                (uint16_t)(rgb1 & 0x1Fu);
+            if (lum1 >= 78u) {
+                s_disp_buf[buf_idx] |= bit_odd;
+            }
+        }
+    }
+
+    display_flush();
 }

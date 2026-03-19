@@ -6,8 +6,8 @@
 #include "ui.h"
 
 lv_obj_t * ui_Screen1 = NULL;
-lv_obj_t * ui_Panel1 = NULL;
-lv_obj_t * ui_Panel2 = NULL;
+lv_obj_t * ui_TextArea1 = NULL;
+lv_obj_t * ui_WeatherIconNow = NULL;
 // event funtions
 
 // build funtions
@@ -17,25 +17,24 @@ void ui_Screen1_screen_init(void)
     ui_Screen1 = lv_obj_create(NULL);
     lv_obj_remove_flag(ui_Screen1, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
 
-    ui_Panel1 = lv_obj_create(ui_Screen1);
-    lv_obj_set_width(ui_Panel1, 182);
-    lv_obj_set_height(ui_Panel1, 37);
-    lv_obj_set_x(ui_Panel1, -4);
-    lv_obj_set_y(ui_Panel1, -103);
-    lv_obj_set_align(ui_Panel1, LV_ALIGN_CENTER);
-    lv_obj_remove_flag(ui_Panel1, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
-    lv_obj_set_style_bg_color(ui_Panel1, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(ui_Panel1, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_TextArea1 = lv_textarea_create(ui_Screen1);
+    lv_obj_set_width(ui_TextArea1, 113);
+    lv_obj_set_height(ui_TextArea1, 47);
+    lv_obj_set_x(ui_TextArea1, -4);
+    lv_obj_set_y(ui_TextArea1, -126);
+    lv_obj_set_align(ui_TextArea1, LV_ALIGN_CENTER);
+    lv_textarea_set_text(ui_TextArea1, "TODAY");
+    lv_textarea_set_placeholder_text(ui_TextArea1, "Placeholder...");
+    lv_obj_set_style_text_font(ui_TextArea1, &lv_font_montserrat_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_Panel2 = lv_obj_create(ui_Screen1);
-    lv_obj_set_width(ui_Panel2, 309);
-    lv_obj_set_height(ui_Panel2, 38);
-    lv_obj_set_x(ui_Panel2, -1);
-    lv_obj_set_y(ui_Panel2, -18);
-    lv_obj_set_align(ui_Panel2, LV_ALIGN_CENTER);
-    lv_obj_remove_flag(ui_Panel2, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
-    lv_obj_set_style_bg_color(ui_Panel2, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(ui_Panel2, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_WeatherIconNow = lv_image_create(ui_Screen1);
+    lv_obj_set_width(ui_WeatherIconNow, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_WeatherIconNow, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_x(ui_WeatherIconNow, -6);
+    lv_obj_set_y(ui_WeatherIconNow, -7);
+    lv_obj_set_align(ui_WeatherIconNow, LV_ALIGN_CENTER);
+    lv_obj_add_flag(ui_WeatherIconNow, LV_OBJ_FLAG_CLICKABLE);     /// Flags
+    lv_obj_remove_flag(ui_WeatherIconNow, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
 
 }
 
@@ -45,7 +44,7 @@ void ui_Screen1_screen_destroy(void)
 
     // NULL screen variables
     ui_Screen1 = NULL;
-    ui_Panel1 = NULL;
-    ui_Panel2 = NULL;
+    ui_TextArea1 = NULL;
+    ui_WeatherIconNow = NULL;
 
 }

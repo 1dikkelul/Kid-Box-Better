@@ -16,6 +16,7 @@
 #define LVGL_TASK_MIN_DELAY_MS 10
 
 static const char *TAG = "lvgl_setup";
+static uint32_t s_flush_debug_count = 0;
 
 // Mutex exposed via lvgl_setup_lock / lvgl_setup_unlock
 static SemaphoreHandle_t s_lvgl_mux = NULL;
@@ -35,16 +36,53 @@ static void lvgl_tick_cb(void *arg)
 
 static void my_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
+    uint32_t dark_count = 0;
+    int32_t dark_min_x = LCD_H_RES;
+    int32_t dark_min_y = LCD_V_RES;
+    int32_t dark_max_x = -1;
+    int32_t dark_max_y = -1;
+
+    if (s_flush_debug_count < 16) {
+        uint32_t w = (uint32_t)(area->x2 - area->x1 + 1);
+        uint32_t h = (uint32_t)(area->y2 - area->y1 + 1);
+        ESP_LOGI(TAG, "Flush[%lu]: area=(%ld,%ld)-(%ld,%ld) size=%lux%lu px_map=%p",
+                 (unsigned long)s_flush_debug_count,
+                 (long)area->x1, (long)area->y1,
+                 (long)area->x2, (long)area->y2,
+                 (unsigned long)w, (unsigned long)h,
+                 px_map);
+    }
+
     const uint16_t *buf = (const uint16_t *)px_map;
     for (int y = area->y1; y <= area->y2; y++) {
         for (int x = area->x1; x <= area->x2; x++) {
             // Pixels above mid-gray → white, below → black
-            uint8_t color = (*buf >= 0x7FFFu) ? DISPLAY_COLOR_WHITE : DISPLAY_COLOR_BLACK;
+            bool is_dark = (*buf < 0x7FFFu);
+            uint8_t color = is_dark ? DISPLAY_COLOR_BLACK : DISPLAY_COLOR_WHITE;
+            if (s_flush_debug_count < 16 && is_dark) {
+                dark_count++;
+                if (x < dark_min_x) dark_min_x = x;
+                if (y < dark_min_y) dark_min_y = y;
+                if (x > dark_max_x) dark_max_x = x;
+                if (y > dark_max_y) dark_max_y = y;
+            }
             display_set_pixel((uint16_t)x, (uint16_t)y, color);
             buf++;
         }
     }
     display_flush();
+    if (s_flush_debug_count < 16) {
+        if (dark_count > 0) {
+            ESP_LOGI(TAG, "Flush[%lu]: dark_pixels=%lu dark_bbox=(%ld,%ld)-(%ld,%ld)",
+                     (unsigned long)s_flush_debug_count,
+                     (unsigned long)dark_count,
+                     (long)dark_min_x, (long)dark_min_y,
+                     (long)dark_max_x, (long)dark_max_y);
+        } else {
+            ESP_LOGI(TAG, "Flush[%lu]: dark_pixels=0", (unsigned long)s_flush_debug_count);
+        }
+        s_flush_debug_count++;
+    }
     lv_display_flush_ready(disp);
 }
 
